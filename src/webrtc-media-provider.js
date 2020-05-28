@@ -73,7 +73,7 @@ var createConnection = function (options) {
              * Workaround for Android 6, 7, Chrome 61.
              * https://bugs.chromium.org/p/chromium/issues/detail?id=769622
              */
-            remoteVideo.style = "border-radius: 1px";
+            //remoteVideo.style = "border-radius: 1px";
         } else {
             //tweak for custom video players. In order to put MediaStream in srcObject #WCS-1511
             if (!remoteVideo) {
@@ -93,7 +93,7 @@ var createConnection = function (options) {
                      * Workaround for Android 6, 7, Chrome 61.
                      * https://bugs.chromium.org/p/chromium/issues/detail?id=769622
                      */
-                    remoteVideo.style = "border-radius: 1px";
+                    //remoteVideo.style = "border-radius: 1px";
                 } else {
                     localVideo = cachedVideo;
                     localVideo.id = id;
@@ -130,17 +130,33 @@ var createConnection = function (options) {
                 remoteVideo.srcObject = event.streams[0];
                 remoteVideo.onloadedmetadata = function (e) {
                     if (remoteVideo) {
-                        remoteVideo.play().catch(function (e) {
-                            if(browserDetails.browser == 'chrome' || browserDetails.browser == 'safari') {
-                                //WCS-1698. fixed autoplay in chromium based browsers
-                                //WCS-2375. fixed autoplay in ios safari
-                                logger.info(LOG_PREFIX, "Autoplay detected! Trying to play a video with a muted sound...");
+                        var playPromise = remoteVideo.play();
+                        if (playPromise) {
+                          playPromise
+                            .then(
+                              () => {
+
+                              },
+                              () => {
+                                remoteVideo.pause();
                                 remoteVideo.muted = true;
-                                remoteVideo.play();
-                            } else {
-                                logger.error(LOG_PREFIX, e);
-                            }
-                        });
+                                remoteVideo.volume = 0;
+
+                                var mutedPlayPromise = remoteVideo.play();
+                                if (mutedPlayPromise) {
+                                  mutedPlayPromise.catch(() => {
+                                    logger.info(LOG_PREFIX, "Video auto play is not working!");
+                                  });
+                                }
+                              })
+                            .catch(() => {
+                              remoteVideo.muted = true;
+                              remoteVideo.volume = 0;
+                              remoteVideo.controls = true; // todo
+                              remoteVideo.play();
+                              logger.info(LOG_PREFIX, "Autoplay detected! Trying to play a video with a muted sound...");
+                            });
+                        }
                     }
                 };
             }
