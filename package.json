@@ -3,6 +3,9 @@
   "version": "0.5.28",
   "main": "./src/flashphoner-core.js",
   "description": "Flashphoner Web Call Server API",
+  "scripts": {
+    "build": "cross-env FLEX_HOME='./.extra/flex_sdk_4.6' grunt release"
+  },
   "dependencies": {
     "adapterjs": "0.14.3",
     "es6-promise": "4.0.5",
@@ -17,8 +20,10 @@
     "@babel/preset-env": "^7.4.3",
     "babelify": "^10.0.0",
     "chai": "^3.5.0",
+    "cross-env": "^7.0.2",
     "grunt": "^1.0.1",
     "grunt-browserify": "^5.0.0",
+    "grunt-cli": "^1.3.2",
     "grunt-contrib": "^0.11.0",
     "grunt-contrib-clean": "^1.0.0",
     "grunt-contrib-concat": "^1.0.1",
