@@ -4,7 +4,8 @@
   "main": "./src/flashphoner-core.js",
   "description": "Flashphoner Web Call Server API",
   "scripts": {
-    "build": "cross-env FLEX_HOME='./.extra/flex_sdk_4.6' grunt release"
+    "build": "cross-env FLEX_HOME='./.extra/flex_sdk_4.6' grunt release",
+    "clean": "grunt clean:release"
   },
   "dependencies": {
     "adapterjs": "0.14.3",
