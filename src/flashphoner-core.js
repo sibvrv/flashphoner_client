@@ -20,6 +20,7 @@ var STREAM_STATUS = constants.STREAM_STATUS;
 var CALL_STATUS = constants.CALL_STATUS;
 var TRANSPORT_TYPE = constants.TRANSPORT_TYPE;
 var CONNECTION_QUALITY = constants.CONNECTION_QUALITY;
+var ERROR_INFO = constants.ERROR_INFO;
 var VIDEO_RATE_GOOD_QUALITY_PERCENT_DIFFERENCE = 20;
 var VIDEO_RATE_BAD_QUALITY_PERCENT_DIFFERENCE = 50;
 var LOW_VIDEO_RATE_THRESHOLD_BAD_PERFECT = 50000;
@@ -302,6 +303,7 @@ var getMediaAccess = function (constraints, display, mediaProvider, disableConst
 };
 
 //default constraints helper
+//WCS-3016 16:9 ratio
 var getDefaultMediaConstraints = function () {
     if (browserDetails.browser == "safari") {
         return {
@@ -735,6 +737,9 @@ var createSession = function (options) {
         var mediaConnection;
         var localDisplay = options.localVideoDisplay;
         var remoteDisplay = options.remoteVideoDisplay;
+
+        var info_;
+        var errorInfo_;
         // Constraints
         if (options.constraints) {
             var constraints = options.constraints;
@@ -884,6 +889,8 @@ var createSession = function (options) {
             }).catch(function (error) {
                 logger.error(LOG_PREFIX, error);
                 status_ = CALL_STATUS.FAILED;
+                info_ = ERROR_INFO.LOCAL_ERROR;
+                errorInfo_ = error.message;
                 callRefreshHandlers[id_]({status: CALL_STATUS.FAILED});
                 hangup();
             });
@@ -1022,6 +1029,8 @@ var createSession = function (options) {
                 });
             }).catch(function (error) {
                 logger.error(LOG_PREFIX, error);
+                info_ = ERROR_INFO.LOCAL_ERROR;
+                errorInfo_ = error.message;
                 status_ = CALL_STATUS.FAILED;
                 callRefreshHandlers[id_]({status: CALL_STATUS.FAILED});
             });
@@ -1359,11 +1368,33 @@ var createSession = function (options) {
             mediaConnection.switchToCam();
         };
 
+        /**
+         * Get call info
+         * @returns {string} Info
+         * @memberof Stream
+         * @inner
+         */
+        var getInfo = function () {
+            return info_;
+        };
+
+        /**
+         * Get stream error info
+         * @returns {string} Error info
+         * @memberof Stream
+         * @inner
+         */
+        var getErrorInfo = function () {
+            return errorInfo_;
+        };
+
 
         call.call = call_;
         call.answer = answer;
         call.hangup = hangup;
         call.id = id;
+        call.getInfo = getInfo;
+        call.getErrorInfo = getErrorInfo;
         call.status = status;
         call.getStats = getStats;
         call.setAudioOutputId = setAudioOutputId;
@@ -1431,6 +1462,8 @@ var createSession = function (options) {
      * @param {Boolean=} options.flashShowFullScreenButton Show full screen button in flash
      * @param {string=} options.transport Transport to be used by server for WebRTC media, {@link Flashphoner.constants.TRANSPORT_TYPE}
      * @param {Boolean=} options.cvoExtension Enable rtp video orientation extension
+     * @param {Integer=} options.playoutDelay Time delay between network reception of media and playout
+     * @param {string=} options.useCanvasMediaStream EXPERIMENTAL: when publish bind browser's media stream to the canvas. It can be useful for image filtering
      * @param {sdpHook} sdpHook The callback that handles sdp from the server
      * @returns {Stream} Stream
      * @throws {TypeError} Error if no options provided
@@ -1522,6 +1555,7 @@ var createSession = function (options) {
         var status_ = STREAM_STATUS.NEW;
         var rtmpUrl = options.rtmpUrl;
         var info_;
+        var errorInfo_;
         var remoteBitrate = -1;
         var networkBandwidth = -1;
         var sdpHook = options.sdpHook;
@@ -1530,6 +1564,8 @@ var createSession = function (options) {
         var remoteVideo = options.remoteVideo;
         //callbacks added using stream.on()
         var callbacks = {};
+        var playoutDelay = options.playoutDelay;
+        var useCanvasMediaStream = options.useCanvasMediaStream;
 
         var connectionQuality;
 
@@ -1688,7 +1724,8 @@ var createSession = function (options) {
                 connectionConfig: mediaOptions,
                 connectionConstraints: mediaConnectionConstraints,
                 audioOutputId: audioOutputId,
-                remoteVideo: remoteVideo
+                remoteVideo: remoteVideo,
+                playoutDelay: playoutDelay
             }, streamRefreshHandlers[id_]).then(function (newConnection) {
                 mediaConnection = newConnection;
                 try {
@@ -1699,7 +1736,8 @@ var createSession = function (options) {
                 return mediaConnection.createOffer({
                     receiveAudio: receiveAudio,
                     receiveVideo: receiveVideo,
-                    stripCodecs: stripCodecs
+                    stripCodecs: stripCodecs,
+                    stereo: _stereo
                 });
             }).then(function (offer) {
                 logger.debug(LOG_PREFIX, "Offer SDP:\n" + offer.sdp);
@@ -1755,7 +1793,7 @@ var createSession = function (options) {
             }
 
             //get access to camera
-            MediaProvider[mediaProvider].getMediaAccess(constraints, display, disableConstraintsNormalization).then(function () {
+            MediaProvider[mediaProvider].getMediaAccess(constraints, display, disableConstraintsNormalization, useCanvasMediaStream).then(function () {
                 if (status_ == STREAM_STATUS.FAILED) {
                     //stream failed while we were waiting for media access, release media
                     if (!cacheLocalResources) {
@@ -1805,7 +1843,8 @@ var createSession = function (options) {
                 });
             }).catch(function (error) {
                 logger.warn(LOG_PREFIX, error);
-                stream.info = error.message;
+                info_ = ERROR_INFO.LOCAL_ERROR;
+                errorInfo_ = error.message;
                 status_ = STREAM_STATUS.FAILED;
                 //fire stream event
                 if (callbacks[status_]) {
@@ -2057,6 +2096,16 @@ var createSession = function (options) {
         };
 
         /**
+         * Get stream error info
+         * @returns {string} Error info
+         * @memberof Stream
+         * @inner
+         */
+        var getErrorInfo = function () {
+            return errorInfo_;
+        };
+
+        /**
          * Get stream video size
          * @returns {Object} Video size
          * @memberof Stream
@@ -2300,6 +2349,7 @@ var createSession = function (options) {
         stream.published = published;
         stream.getRecordInfo = getRecordInfo;
         stream.getInfo = getInfo;
+        stream.getErrorInfo = getErrorInfo;
         stream.videoResolution = videoResolution;
         stream.setAudioOutputId = setAudioOutputId;
         stream.setVolume = setVolume;

@@ -15,6 +15,10 @@ var createMicGainNode;
 var microphoneGain;
 var constants = require('./constants');
 var validBrowsers = ["firefox", "chrome", "safari"];
+// list of presented video input devices
+var videoCams = [];
+// list of presented audio input devices
+var mics = [];
 
 var createConnection = function (options) {
     return new Promise(function (resolve, reject) {
@@ -37,9 +41,7 @@ var createConnection = function (options) {
         var localVideo;
         //tweak for custom video players #WCS-1511
         var remoteVideo = options.remoteVideo;
-        var videoCams = [];
         var switchCamCount = 0;
-        var mics = [];
         var switchMicCount = 0;
         var customStream = options.customStream;
         var currentAudioTrack;
@@ -47,6 +49,7 @@ var createConnection = function (options) {
         var systemSoundTrack;
         var constraints = options.constraints ? options.constraints : {};
         var screenShare = false;
+        var playoutDelay = options.playoutDelay;
 
         if (bidirectional) {
             localVideo = getCacheInstance(localDisplay);
@@ -104,24 +107,18 @@ var createConnection = function (options) {
         if (localVideo) {
             var videoTrack = localVideo.srcObject.getVideoTracks()[0];
             if (videoTrack) {
-                listDevices(false).then(function (devices) {
-                    devices.video.forEach(function (device) {
-                        if (videoTrack.label === device.label) {
-                            switchCamCount = videoCams.length;
-                        }
-                        videoCams.push(device.id);
-                    })
+                videoCams.forEach((cam) => {
+                   if (videoTrack.label === cam.label) {
+                       switchCamCount = videoCams.length;
+                   }
                 });
             }
             var audioTrack = localVideo.srcObject.getAudioTracks()[0];
             if (audioTrack) {
-                listDevices(false).then(function (devices) {
-                    devices.audio.forEach(function (device) {
-                        if (audioTrack.label === device.label) {
-                            switchMicCount = mics.length;
-                        }
-                        mics.push(device.id);
-                    })
+                mics.forEach((mic) => {
+                    if (audioTrack.label === mic.label) {
+                        switchMicCount = mics.length;
+                    }
                 });
             }
         }
@@ -138,9 +135,7 @@ var createConnection = function (options) {
 
                               },
                               () => {
-                                remoteVideo.pause();
                                 remoteVideo.muted = true;
-                                remoteVideo.volume = 0;
 
                                 var mutedPlayPromise = remoteVideo.play();
                                 if (mutedPlayPromise) {
@@ -159,6 +154,17 @@ var createConnection = function (options) {
                         }
                     }
                 };
+            }
+
+            //WCS-2904 check playoutDelay to prevent TypeError in some browsers
+            if (playoutDelay !== undefined) {
+                //WCS-2771 add playback delay
+                connection.getReceivers().forEach((track) => {
+                    if (track.playoutDelayHint === undefined) {
+                        logger.warn("playout delay unsupported");
+                    }
+                    track.playoutDelayHint = playoutDelay;
+                });
             }
         };
         connection.onremovestream = function (event) {
@@ -229,6 +235,10 @@ var createConnection = function (options) {
 
                 //create offer and set local sdp
                 connection.createOffer(constraints).then(function (offer) {
+                    //WCS-2919 Workaround for Chromium bug to play stereo
+                    if (options.stereo) {
+                        offer.sdp = offer.sdp.replace('minptime=10', 'minptime=10;stereo=1;sprop-stereo=1');
+                    }
                     connection.setLocalDescription(offer).then(function () {
                         var o = {};
                         o.sdp = util.stripCodecs(offer.sdp, options.stripCodecs);
@@ -713,7 +723,7 @@ var mixAudioTracks = function (stream1, stream2) {
     return newStream.getAudioTracks()[0];
 };
 
-var getMediaAccess = function (constraints, display, disableConstraintsNormalization) {
+var getMediaAccess = function (constraints, display, disableConstraintsNormalization, useCanvas) {
     return new Promise(function (resolve, reject) {
 
         if (!constraints) {
@@ -741,7 +751,8 @@ var getMediaAccess = function (constraints, display, disableConstraintsNormaliza
         //check if this is screen sharing
         if (constraints.video && constraints.video.type && constraints.video.type == "screen") {
             delete constraints.video.type;
-            if (window.chrome && constraints.video.withoutExtension) {
+            //WCS-2751 Add screen capture using getDisplayMedia in Safari
+            if (screenCaptureSupportedBrowsers() && constraints.video.withoutExtension) {
                 getScreenDeviceIdWoExtension(constraints).then(function (screenSharingConstraints) {
                     getScreenAccessWoExtension(screenSharingConstraints, constraints.audio);
                 });
@@ -813,35 +824,151 @@ var getMediaAccess = function (constraints, display, disableConstraintsNormaliza
                     loadVideo(display, constraints.customStream, screenShare, requestAudioConstraints, resolve, constraints);
                 }
             } else {
-                navigator.getUserMedia(constraints, function (stream) {
-                    loadVideo(display, stream, screenShare, requestAudioConstraints, resolve, constraints);
+                // WCS-2933, fix mobile streaming issues, gather info about available devices before streaming, but not during
+                listDevices(false).then((devices) => {
+                    devices.video.forEach(function (device) {
+                        videoCams.push(device.id);
+                    })
+                    devices.audio.forEach(function (device) {
+                        mics.push(device.id);
+                    })
+                    navigator.getUserMedia(constraints, function (stream) {
+                        loadVideo(display, stream, screenShare, requestAudioConstraints, resolve, constraints, useCanvas);
+                    }, reject);
                 }, reject);
             }
         }
     });
 };
 
-var loadVideo = function (display, stream, screenShare, requestAudioConstraints, resolve, constraints) {
-    var video = getCacheInstance(display);
-    if (!video) {
-        video = document.createElement('video');
-        display.appendChild(video);
+var loadOrdinaryVideo = function(display, stream, screenShare, constraints, video) {
+    let vEl = video;
+    if (!vEl) {
+        vEl = document.createElement('video');
+        display.appendChild(vEl);
     }
+    vEl.id = uuid_v1() + LOCAL_CACHED_VIDEO;
+    vEl.srcObject = stream;
+    //mute audio
+    vEl.muted = true;
+    vEl.onloadedmetadata = function (e) {
+        //WCS-2751 Add screen capture using getDisplayMedia in Safari
+        if (screenShare && !screenCaptureSupportedBrowsers()) {
+            setScreenResolution(vEl, stream, constraints);
+        }
+        vEl.play();
+    };
+
+    return vEl;
+}
+
+var loadCanvasVideo = function (display, stream, video) {
+    let vEl = video;
+    if (!vEl) {
+        createCanvasEl(display);
+        createVideoEl(display.children[0]);
+        vEl = display.children[0];
+    } else {
+        // replace local video with canvas, set source video element as child for canvas
+        if (vEl.tagName !== 'CANVAS') {
+            let canvas = document.createElement('canvas');
+            display.replaceChild(canvas, vEl);
+            canvas.appendChild(vEl);
+            vEl = canvas;
+        }
+    }
+    vEl.id = uuid_v1() + LOCAL_CACHED_VIDEO;
+
+    let child = vEl.children[0];
+    child.srcObject = stream;
+    //mute audio
+    child.muted = true;
+    child.onloadedmetadata = function (e) {
+        child.play();
+        vEl.width = child.videoWidth;
+        vEl.height = child.videoHeight;
+        // Resize canvas to save aspect ratio
+        resizeCanvas(vEl, child.videoWidth, child.videoHeight);
+    };
+    // https://bugzilla.mozilla.org/show_bug.cgi?id=1572422
+    if (Browser.isFirefox()) {
+        vEl.getContext('2d');
+    }
+    vEl.srcObject = vEl.captureStream(30);
+    if (stream.getAudioTracks().length > 0) {
+        vEl.srcObject.addTrack(stream.getAudioTracks()[0]);
+    }
+
+    function createCanvasEl(parent) {
+        let canvas = document.createElement('canvas');
+        parent.appendChild(canvas);
+    }
+
+    function createVideoEl(parent) {
+        let video = document.createElement('video');
+        parent.appendChild(video);
+    }
+
+    function resizeCanvas(canvas, videoWidth, videoHeight) {
+        if (!canvas.parentNode) {
+            return;
+        }
+        let display = vEl.parentNode;
+        let parentSize = {
+            w: display.parentNode.clientWidth,
+            h: display.parentNode.clientHeight
+        };
+        let newSize;
+        if (videoWidth && videoHeight) {
+            newSize = downScaleToFitSize(videoWidth, videoHeight, parentSize.w, parentSize.h);
+        } else {
+            newSize = downScaleToFitSize(canvas.videoWidth, canvas.videoHeight, parentSize.w, parentSize.h);
+        }
+        display.style.width = newSize.w + "px";
+        display.style.height = newSize.h + "px";
+
+        //vertical align
+        let margin = 0;
+        if (parentSize.h - newSize.h > 1) {
+            margin = Math.floor((parentSize.h - newSize.h) / 2);
+        }
+        display.style.margin = margin + "px auto";
+
+        function downScaleToFitSize(videoWidth, videoHeight, dstWidth, dstHeight) {
+            let newWidth, newHeight;
+            let videoRatio = videoWidth / videoHeight;
+            let dstRatio = dstWidth / dstHeight;
+            if (dstRatio > videoRatio) {
+                newHeight = dstHeight;
+                newWidth = Math.floor(videoRatio * dstHeight);
+            } else {
+                newWidth = dstWidth;
+                newHeight = Math.floor(dstWidth / videoRatio);
+            }
+            return {
+                w: newWidth,
+                h: newHeight
+            };
+        }
+    }
+
+    return vEl;
+}
+
+var loadVideo = function (display, stream, screenShare, requestAudioConstraints, resolve, constraints, useCanvas) {
+    let video;
+    if (useCanvas) {
+        video = loadCanvasVideo(display, stream, getCacheInstance(display));
+    } else {
+        video = loadOrdinaryVideo(display, stream, screenShare, constraints, getCacheInstance(display));
+    }
+
     if (createMicGainNode && stream.getAudioTracks().length > 0 && browserDetails.browser == "chrome") {
         //WCS-1696. We need to start audioContext to work with gain control
         audioContext.resume();
         microphoneGain = createGainNode(stream);
     }
-    video.id = uuid_v1() + LOCAL_CACHED_VIDEO;
-    video.srcObject = stream;
-    //mute audio
-    video.muted = true;
-    video.onloadedmetadata = function (e) {
-        if (screenShare && !window.chrome) {
-            setScreenResolution(video, stream, constraints);
-        }
-        video.play();
-    };
+
     if (constraints.systemSound && browserDetails.browser == "chrome") {
         addSystemSound();
     } else {
@@ -963,11 +1090,24 @@ var setScreenResolution = function (video, stream, constraints) {
 //for chrome
 var getScreenDeviceIdWoExtension = function (constraints) {
     return new Promise(function (resolve, reject) {
-        //WCS-1952. exact constraints are not supported.
+        //WCS-2751. exact constraints are supported.
         //WCS-1986. added audio: true to constraints.
+        var video = {};
+        if (constraints.video.frameRate.ideal) {
+          video.frameRate = constraints.video.frameRate.ideal;
+        }
+        if (constraints.video.width) {
+          video.width = constraints.video.width;
+        }
+        if (constraints.video.height) {
+          video.height = constraints.video.height;
+        }
+        if (Object.keys(video).length === 0) {
+          video = true;
+        }
         resolve({
-            video: true,
-            audio: true
+          video: video,
+          audio: true
         });
     });
 };
@@ -1057,6 +1197,11 @@ function removeVideoElement(video) {
             }
         }
         video.srcObject = null;
+        if (video.tagName === 'CANVAS') {
+            for (let i = 0; i < video.children.length; i++) {
+                removeVideoElement(video.children[i]);
+            }
+        }
     }
 }
 
@@ -1261,6 +1406,10 @@ var playFirstVideo = function (display, isLocal, src) {
         }
         resolve();
     });
+};
+
+var screenCaptureSupportedBrowsers = function () {
+    return (Browser.isChrome() || Browser.isSafari());
 };
 
 module.exports = {
